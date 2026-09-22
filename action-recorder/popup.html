@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Action Recorder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Tab Navigation -->
+  <div class="tabs">
+    <button class="tab active" data-tab="recorder">Recorder</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
+
+  <!-- Recorder Tab -->
+  <div id="tab-recorder" class="tab-content active">
+    <!-- Recording Status -->
+    <div class="status-row">
+      <span id="status-dot" class="status-dot off"></span>
+      <span id="status-text">Recording OFF</span>
+    </div>
+
+    <!-- Session ID -->
+    <div class="info-row">
+      <label>Session ID</label>
+      <div class="session-id-row">
+        <code id="session-id">—</code>
+        <button id="copy-session" class="btn-icon" title="Copy Session ID">📋</button>
+      </div>
+    </div>
+
+    <!-- Counters -->
+    <div class="counters">
+      <div class="counter">
+        <span id="action-count">0</span>
+        <label>Actions</label>
+      </div>
+      <div class="counter">
+        <span id="network-count">0</span>
+        <label>Network</label>
+      </div>
+    </div>
+
+    <!-- Helper text when recording -->
+    <div id="helper-text" class="helper-text" style="display:none;">
+      New session will be created when you start recording again
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="actions">
+      <button id="btn-start" class="btn btn-start">Start Recording</button>
+      <button id="btn-stop" class="btn btn-stop" disabled>Stop Recording</button>
+      <button id="btn-export-json" class="btn btn-export" disabled>Export JSON</button>
+      <button id="btn-export-pw" class="btn btn-export" disabled>Export Playwright</button>
+      <button id="btn-clear" class="btn btn-danger" disabled>Clear Session</button>
+    </div>
+  </div>
+
+  <!-- Settings Tab -->
+  <div id="tab-settings" class="tab-content">
+    <!-- Capture Settings -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="capture">Capture Settings ▾</h3>
+      <div id="section-capture" class="section-body">
+        <label class="toggle-row">
+          <input type="checkbox" id="set-ui-events" checked disabled>
+          <span>UI Events (always on)</span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="set-network" checked>
+          <span>Network Requests</span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="set-websocket">
+          <span>WebSocket (Phase 2)</span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="set-spa">
+          <span>SPA Navigation (Phase 2)</span>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="set-iframes" checked>
+          <span>Iframes</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Body Size Limits -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="bodysize">Body Size Limits ▾</h3>
+      <div id="section-bodysize" class="section-body" style="display:none;">
+        <div class="input-row">
+          <label>Max request body</label>
+          <div class="input-group">
+            <input type="number" id="set-req-body" min="16" max="256" value="64">
+            <span class="unit">KB</span>
+          </div>
+          <span class="hint">16–256 KB</span>
+        </div>
+        <div class="input-row">
+          <label>Max response body</label>
+          <div class="input-group">
+            <input type="number" id="set-res-body" min="64" max="1024" value="256">
+            <span class="unit">KB</span>
+          </div>
+          <span class="hint">64–1024 KB</span>
+        </div>
+        <div class="input-row">
+          <label>Max outerHTML</label>
+          <div class="input-group">
+            <input type="number" id="set-outer-html" min="500" max="5000" value="2000">
+            <span class="unit">chars</span>
+          </div>
+          <span class="hint">500–5000</span>
+        </div>
+        <div class="input-row">
+          <label>Max innerText</label>
+          <div class="input-group">
+            <input type="number" id="set-text" min="1000" max="20000" value="5000">
+            <span class="unit">chars</span>
+          </div>
+          <span class="hint">1000–20000</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sensitive Data -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="sensitive">Sensitive Data ▾</h3>
+      <div id="section-sensitive" class="section-body" style="display:none;">
+        <div class="sensitive-row locked">
+          <span class="field-name">🔒 Passwords</span>
+          <span class="badge">Always mask</span>
+        </div>
+        <div class="sensitive-row locked">
+          <span class="field-name">🔒 Credit Cards</span>
+          <span class="badge">Always mask</span>
+        </div>
+        <div class="sensitive-row configurable">
+          <span class="field-name">Authorization</span>
+          <label class="radio-group">
+            <input type="radio" name="sens-authorization" value="mask" checked> Mask
+            <input type="radio" name="sens-authorization" value="record"> Record value
+          </label>
+        </div>
+        <div class="sensitive-row configurable">
+          <span class="field-name">Cookies</span>
+          <label class="radio-group">
+            <input type="radio" name="sens-cookies" value="mask" checked> Mask
+            <input type="radio" name="sens-cookies" value="record"> Record value
+          </label>
+        </div>
+        <div class="sensitive-row configurable">
+          <span class="field-name">API Keys</span>
+          <label class="radio-group">
+            <input type="radio" name="sens-apikeys" value="mask" checked> Mask
+            <input type="radio" name="sens-apikeys" value="record"> Record value
+          </label>
+        </div>
+        <div class="sensitive-row configurable">
+          <span class="field-name">Access Tokens</span>
+          <label class="radio-group">
+            <input type="radio" name="sens-accesstokens" value="mask" checked> Mask
+            <input type="radio" name="sens-accesstokens" value="record"> Record value
+          </label>
+        </div>
+        <div class="sensitive-row configurable">
+          <span class="field-name">Refresh Tokens</span>
+          <label class="radio-group">
+            <input type="radio" name="sens-refreshtokens" value="mask" checked> Mask
+            <input type="radio" name="sens-refreshtokens" value="record"> Record value
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Sensitive Keywords -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="customkeys">Custom Sensitive Keywords ▾</h3>
+      <div id="section-customkeys" class="section-body" style="display:none;">
+        <div class="keyword-input-row">
+          <input type="text" id="custom-keyword-input" placeholder="Add keyword (e.g. session_id)">
+          <button id="btn-add-keyword" class="btn-small">Add</button>
+        </div>
+        <div id="keyword-tags" class="keyword-tags"></div>
+      </div>
+    </div>
+
+    <!-- Correlation -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="correlation">Correlation ▾</h3>
+      <div id="section-correlation" class="section-body" style="display:none;">
+        <label class="toggle-row">
+          <input type="checkbox" id="set-async-context">
+          <span>Async context propagation</span>
+        </label>
+        <p class="note">Best-effort only. May not work for all async callbacks.</p>
+      </div>
+    </div>
+
+    <!-- Export Settings -->
+    <div class="settings-section">
+      <h3 class="section-header" data-toggle="export">Export ▾</h3>
+      <div id="section-export" class="section-body" style="display:none;">
+        <label class="radio-group">
+          Default format:
+          <input type="radio" name="export-format" value="json" checked> JSON
+          <input type="radio" name="export-format" value="playwright"> Playwright
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="set-mask-export" checked>
+          <span>Mask values in export</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Save / Reset -->
+    <div class="settings-actions">
+      <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+      <button id="btn-reset-settings" class="btn btn-danger">Reset Defaults</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

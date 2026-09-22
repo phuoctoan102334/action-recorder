@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Action Recorder",
+  "version": "1.0.0",
+  "description": "Records user UI actions and associated network requests for automation/QA replay.",
+
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "webNavigation"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Action Recorder"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["recorder.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["relay.js"],
+      "all_frames": true,
+      "run_at": "document_start"
+    }
+  ]
+}

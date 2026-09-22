@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>iframe Test</title></head>
+<body style="margin:8px; font-family:system-ui; font-size:13px;">
+  <p>iframe content</p>
+  <input type="text" name="iframe-input" placeholder="iframe input">
+  <button id="iframe-btn">iframe Button</button>
+  <div id="iframe-result"></div>
+  <script>
+    document.getElementById('iframe-btn').addEventListener('click', () => {
+      document.getElementById('iframe-result').textContent = 'iframe button clicked!';
+    });
+  </script>
+</body>
+</html>
