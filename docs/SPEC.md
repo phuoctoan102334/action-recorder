@@ -125,7 +125,9 @@ Background uses sender.tab.id and sender.frameId from chrome.runtime.sendMessage
 
 ## 15. Navigation Tracking
 
-webNavigation API: record { type: "navigation", url, timestamp }. SPA (Phase 2): track history.pushState/replaceState, popstate, hashchange. Record { type: "spa_navigation", from, to, timestamp }. Preserve native history API behavior.
+**Scope note (MVP):** Navigation *recording* is **không thuộc MVP lần này** — full navigation event capture (recording `{ type: "navigation", url, timestamp }` via webNavigation API) is deferred and not part of Phase 1 acceptance. The `webNavigation` permission is used in this MVP **only** for B8 broadcast: `webNavigation.onCommitted` triggers `sendStateToTab` so newly committed pages join an active recording session. No navigation action/event is written to IndexedDB or export.
+
+SPA navigation (pushState/replaceState, popstate, hashchange → `{ type: "spa_navigation", from, to, timestamp }`): Phase 2, out of MVP scope. Preserve native history API behavior when implemented.
 
 ## 16. Input Coalescing
 
