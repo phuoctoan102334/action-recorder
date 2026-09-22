@@ -3,18 +3,13 @@
  * Bridges messages from MAIN world (recorder.js via window.postMessage)
  * to background service worker (chrome.runtime.sendMessage).
  *
- * ONLY forwards messages with the correct source marker.
- * Validates message structure before forwarding.
+ * On load, asks background for recording state so newly opened tabs /
+ * navigated pages join an active session.
  */
 
 const MESSAGE_SOURCE = 'ACTION_RECORDER';
 const MESSAGE_VERSION = 1;
 
-/**
- * Validate incoming postMessage from MAIN world.
- * @param {*} msg
- * @returns {boolean}
- */
 function isValidMessage(msg) {
   return (
     msg &&
@@ -26,38 +21,47 @@ function isValidMessage(msg) {
   );
 }
 
-/**
- * Listen for messages from MAIN world (recorder.js).
- */
 window.addEventListener('message', (event) => {
-  // Only accept messages from the same window
   if (event.source !== window) return;
 
   const msg = event.data;
   if (!isValidMessage(msg)) return;
 
-  // Forward to background service worker
   try {
     chrome.runtime.sendMessage(msg, (response) => {
       if (chrome.runtime.lastError) {
-        // Background may not be ready; fail silently
         return;
       }
     });
   } catch (err) {
-    // Extension context invalidated or other error; fail silently
+    // Extension context invalidated; fail silently
   }
 });
 
-/**
- * Listen for messages from background (e.g., popup commands).
- * Also handles chrome.tabs.sendMessage from popup.
- */
+// Ask background whether a session is active (covers new tabs + navigations)
+try {
+  chrome.runtime.sendMessage({
+    source: MESSAGE_SOURCE,
+    version: MESSAGE_VERSION,
+    type: 'GET_RECORDING_STATE',
+    payload: {}
+  }, (resp) => {
+    if (chrome.runtime.lastError) return;
+    if (resp && resp.recording && resp.sessionId) {
+      window.postMessage({
+        source: MESSAGE_SOURCE,
+        version: MESSAGE_VERSION,
+        type: 'START_RECORDING',
+        payload: { sessionId: resp.sessionId, settings: resp.settings || null }
+      }, '*');
+    }
+  });
+} catch (err) { /* fail silently */ }
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== 'object') return;
   if (msg.source !== MESSAGE_SOURCE) return;
 
-  // Forward background/popup messages to MAIN world (recorder.js)
   try {
     window.postMessage({
       source: MESSAGE_SOURCE,
