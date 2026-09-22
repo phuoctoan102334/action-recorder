@@ -7,12 +7,10 @@
 (function () {
   'use strict';
 
-  // ─── Constants ───
-
   const MESSAGE_SOURCE = 'ACTION_RECORDER';
   const MESSAGE_VERSION = 1;
 
-  const SENSITIVE_KEYWORDS = [
+  const DEFAULT_KEYWORDS = [
     'password', 'passwd', 'pwd', 'token', 'secret',
     'api_key', 'apikey', 'api-key', 'access_token', 'accesstoken',
     'refresh_token', 'refreshtoken', 'authorization', 'auth',
@@ -20,29 +18,27 @@
     'cvv', 'cvc', 'otp', 'one_time_password'
   ];
 
-  const HASH_CLASS_PATTERNS = [
-    /^css-[a-f0-9]+$/i,
-    /^sc-[A-Za-z]+$/,
-    /^Mui[A-Z].*-[a-z0-9]+$/,
-    /^_[A-Za-z]+_[A-Za-z0-9]+$/
-  ];
-
-  const MAX_INNER_TEXT = 5000;
-  const MAX_OUTER_HTML = 2000;
   const SCROLL_DEBOUNCE_MS = 500;
-
-  // ─── State ───
+  const SELECTORS = globalThis.ActionRecorderSelectors;
 
   let sessionId = null;
   let actionSeq = 0;
   let currentActionContext = null;
   let isRecording = false;
+  let settings = null;
 
-  // ─── Message Sending ───
+  function effectiveSettings() {
+    return settings || {
+      maxRequestBodySize: 64 * 1024,
+      maxResponseBodySize: 256 * 1024,
+      maxOuterHTML: 2000,
+      maxText: 5000,
+      captureIframes: true
+    };
+  }
 
   function sendMessage(type, payload) {
     if (!isRecording && type !== 'SESSION_START' && type !== 'SESSION_STOP') return;
-
     try {
       window.postMessage({
         source: MESSAGE_SOURCE,
@@ -55,13 +51,28 @@
     }
   }
 
-  // ─── Session Control ───
+  function isMainFrame() {
+    try { return window === window.top; } catch (e) { return false; }
+  }
 
-  function startSession(newSessionId) {
+  function iframesAllowed() {
+    return effectiveSettings().captureIframes !== false || isMainFrame();
+  }
+
+  function startSession(newSessionId, nextSettings) {
     sessionId = newSessionId;
     actionSeq = 0;
     currentActionContext = null;
     isRecording = true;
+    if (nextSettings) {
+      settings = nextSettings;
+      if (SELECTORS && SELECTORS.setLimits) {
+        SELECTORS.setLimits({
+          maxOuterHTML: settings.maxOuterHTML,
+          maxText: settings.maxText
+        });
+      }
+    }
     sendMessage('SESSION_START', { sessionId, startedAt: Date.now() });
   }
 
@@ -69,52 +80,79 @@
     isRecording = false;
     sendMessage('SESSION_STOP', { sessionId, endedAt: Date.now() });
     sessionId = null;
+    settings = null;
   }
 
-  // Listen for session control messages from relay.js
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     const msg = event.data;
     if (!msg || msg.source !== MESSAGE_SOURCE || msg.version !== MESSAGE_VERSION) return;
 
     if (msg.type === 'START_RECORDING') {
-      startSession(msg.payload.sessionId);
+      startSession(msg.payload.sessionId, msg.payload.settings);
     } else if (msg.type === 'STOP_RECORDING') {
       stopSession();
     }
   });
-
-  // ─── Utility ───
 
   function generateActionId() {
     return ++actionSeq;
   }
 
   function getActionUid(actionId) {
-    // tabId and frameId will be set by background.js from sender metadata
+    // Final uid is rewritten by background.js with tabId/frameId from sender metadata.
     return `${sessionId}:pending:${actionId}`;
+  }
+
+  function allKeywords() {
+    const custom = (settings && settings.customSensitiveKeywords) || [];
+    return DEFAULT_KEYWORDS.concat(custom);
+  }
+
+  function keywordMatches(text, keyword) {
+    if (text == null || keyword == null) return false;
+    const kw = String(keyword).toLowerCase();
+    const field = String(text).toLowerCase();
+    if (field === kw) return true;
+    const fTokens = field.split(/[^a-z0-9]+/).filter(Boolean);
+    const kTokens = kw.split(/[^a-z0-9]+/).filter(Boolean);
+    if (kTokens.length === 0) return false;
+    if (kTokens.length === 1) {
+      return fTokens.includes(kTokens[0]) || (field.endsWith(kTokens[0]) && field.length > kTokens[0].length);
+    }
+    for (let i = 0; i + kTokens.length <= fTokens.length; i++) {
+      let ok = true;
+      for (let j = 0; j < kTokens.length; j++) {
+        if (fTokens[i + j] !== kTokens[j]) { ok = false; break; }
+      }
+      if (ok) return true;
+    }
+    return false;
   }
 
   function isSensitiveField(element) {
     if (!element) return false;
-    const tag = element.tagName?.toLowerCase();
+    const tag = element.tagName && element.tagName.toLowerCase();
     if (tag === 'input' && element.type === 'password') return true;
+    if (tag === 'input' && (element.type === 'credit-card' || element.autocomplete === 'cc-number')) return true;
 
     const checkFields = [
       element.name, element.id, element.autocomplete,
-      element.getAttribute('aria-label'), element.placeholder
-    ].filter(Boolean).map(s => s.toLowerCase());
+      element.getAttribute && element.getAttribute('aria-label'),
+      element.placeholder
+    ].filter(Boolean);
 
+    const keywords = allKeywords();
     for (const field of checkFields) {
-      for (const kw of SENSITIVE_KEYWORDS) {
-        if (field.includes(kw)) return true;
+      for (const kw of keywords) {
+        if (keywordMatches(field, kw)) return true;
       }
     }
     return false;
   }
 
   function getElementValue(element) {
-    const tag = element.tagName?.toLowerCase();
+    const tag = element.tagName && element.tagName.toLowerCase();
 
     if (tag === 'input') {
       if (element.type === 'checkbox' || element.type === 'radio') {
@@ -128,220 +166,22 @@
     return null;
   }
 
-  // ─── Target Extraction ───
-
   function getTargetMetadata(element) {
-    if (!element || !element.tagName) return null;
-
-    const meta = {
-      tag: element.tagName?.toLowerCase(),
-      id: element.id || null,
-      name: element.name || null,
-      classList: Array.from(element.classList || []),
-      attributes: {},
-      innerText: null,
-      outerHTML: null,
-      domPath: [],
-      xpath: null,
-      cssSelectorCandidates: [],
-      boundingRect: null,
-      isInShadowDOM: false,
-      shadowHostPath: []
-    };
-
-    // Attributes
-    if (element.attributes) {
-      for (const attr of element.attributes) {
-        meta.attributes[attr.name] = attr.value;
-      }
+    const meta = SELECTORS ? SELECTORS.getTargetMetadata(element) : null;
+    if (meta) {
+      meta.sensitive = isSensitiveField(element);
     }
-
-    // Inner text (truncated)
-    try {
-      const text = element.innerText || '';
-      meta.innerText = text.length > MAX_INNER_TEXT ? text.slice(0, MAX_INNER_TEXT) + '...' : text;
-    } catch {}
-
-    // Outer HTML (truncated)
-    try {
-      const html = element.outerHTML || '';
-      meta.outerHTML = html.length > MAX_OUTER_HTML ? html.slice(0, MAX_OUTER_HTML) + '...' : html;
-    } catch {}
-
-    // Bounding rect
-    try {
-      const rect = element.getBoundingClientRect();
-      meta.boundingRect = {
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height)
-      };
-    } catch {}
-
-    // Shadow DOM detection
-    try {
-      const root = element.getRootNode();
-      meta.isInShadowDOM = root instanceof ShadowRoot;
-      if (meta.isInShadowDOM) {
-        meta.shadowHostPath = buildShadowHostPath(element);
-      }
-    } catch {}
-
-    // DOM path
-    meta.domPath = buildDomPath(element);
-
-    // XPath
-    meta.xpath = buildXPath(element);
-
-    // CSS selector candidates
-    meta.cssSelectorCandidates = buildCssSelectors(element);
-
     return meta;
   }
 
-  function buildDomPath(element) {
-    const path = [];
-    let current = element;
-    while (current && current !== document.body && current !== document.documentElement) {
-      const tag = current.tagName?.toLowerCase();
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-        const index = siblings.indexOf(current);
-        if (siblings.length > 1) {
-          path.unshift(`${tag}[${index}]`);
-        } else {
-          path.unshift(tag);
-        }
-      } else {
-        path.unshift(tag);
-      }
-      current = parent;
-    }
-    return path;
-  }
-
-  function buildXPath(element) {
-    // Try id-based first
-    if (element.id) {
-      return `//*[@id="${element.id}"]`;
-    }
-
-    // Try unique attribute
-    for (const attr of ['data-testid', 'data-test', 'data-cy', 'name', 'aria-label']) {
-      const val = element.getAttribute(attr);
-      if (val) {
-        const xpath = `//${element.tagName?.toLowerCase()}[@${attr}="${val}"]`;
-        try {
-          const result = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
-          if (result.snapshotLength === 1) return xpath;
-        } catch {}
-      }
-    }
-
-    // Absolute path with predicates
-    const parts = [];
-    let current = element;
-    while (current && current !== document) {
-      const tag = current.tagName?.toLowerCase();
-      const parent = current.parentElement;
-      if (parent) {
-        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-        if (siblings.length > 1) {
-          const index = siblings.indexOf(current) + 1;
-          parts.unshift(`${tag}[${index}]`);
-        } else {
-          parts.unshift(tag);
-        }
-      } else {
-        parts.unshift(tag);
-      }
-      current = parent;
-    }
-    return '/' + parts.join('/');
-  }
-
-  function buildCssSelectors(element) {
-    const candidates = [];
-
-    // 1. ID selector
-    if (element.id) {
-      candidates.push(`#${CSS.escape(element.id)}`);
-    }
-
-    // 2. data-testid / data-test / data-cy
-    for (const attr of ['data-testid', 'data-test', 'data-cy']) {
-      const val = element.getAttribute(attr);
-      if (val) candidates.push(`[${attr}="${CSS.escape(val)}"]`);
-    }
-
-    // 3. Name attribute
-    if (element.name) {
-      candidates.push(`${element.tagName?.toLowerCase()}[name="${CSS.escape(element.name)}"]`);
-    }
-
-    // 4. Aria-label
-    const ariaLabel = element.getAttribute('aria-label');
-    if (ariaLabel) candidates.push(`[aria-label="${CSS.escape(ariaLabel)}"]`);
-
-    // 5. Role
-    const role = element.getAttribute('role');
-    if (role) candidates.push(`[role="${CSS.escape(role)}"]`);
-
-    // 6. Stable classes (exclude hash/random patterns)
-    const stableClasses = Array.from(element.classList || []).filter(cls => {
-      return !HASH_CLASS_PATTERNS.some(p => p.test(cls));
-    });
-    if (stableClasses.length > 0) {
-      const selector = `${element.tagName?.toLowerCase()}.${stableClasses.map(c => CSS.escape(c)).join('.')}`;
-      candidates.push(selector);
-    }
-
-    // 7. Tag + unique attributes
-    const tag = element.tagName?.toLowerCase();
-    if (tag) {
-      const attrs = [];
-      for (const attr of ['type', 'role', 'aria-label']) {
-        const val = element.getAttribute(attr);
-        if (val) attrs.push(`[${attr}="${CSS.escape(val)}"]`);
-      }
-      if (attrs.length > 0) {
-        candidates.push(`${tag}${attrs.join('')}`);
-      }
-    }
-
-    return candidates;
-  }
-
-  function buildShadowHostPath(element) {
-    const path = [];
-    let current = element;
-    while (current) {
-      const root = current.getRootNode();
-      if (root instanceof ShadowRoot) {
-        const host = root.host;
-        if (host) {
-          const tag = host.tagName?.toLowerCase();
-          const id = host.id ? `#${host.id}` : '';
-          path.unshift(`${tag}${id}`);
-          current = host;
-          continue;
-        }
-      }
-      break;
-    }
-    return path;
-  }
-
-  // ─── DOM Event Recording ───
-
   function recordAction(eventType, event, value = null) {
     if (!isRecording || !sessionId) return;
+    if (!iframesAllowed()) return;
 
     const actionId = generateActionId();
     const actionUid = getActionUid(actionId);
     const now = Date.now();
+    const target = getTargetMetadata(event && event.target);
 
     const action = {
       sessionId,
@@ -358,18 +198,17 @@
         }
       },
       frame: {
-        frameId: 'pending', // Set by background.js
-        tabId: 'pending',   // Set by background.js
+        frameId: 'pending',
+        tabId: 'pending',
         frameUrl: location.href
       },
-      target: getTargetMetadata(event?.target),
+      target,
       value,
       keyInfo: null,
       mouseInfo: null,
-      isTrusted: event?.isTrusted ?? true
+      isTrusted: event ? (event.isTrusted ?? true) : true
     };
 
-    // Add key info for keyboard events
     if (eventType === 'keydown' || eventType === 'keyup') {
       action.keyInfo = {
         key: event.key,
@@ -381,7 +220,6 @@
       };
     }
 
-    // Add mouse info for click events
     if (eventType === 'click') {
       action.mouseInfo = {
         x: event.clientX,
@@ -391,52 +229,41 @@
       };
     }
 
-    // Set action context for network correlation
     currentActionContext = { actionUid, actionId, timestamp: now };
 
     sendMessage('ACTION_RECORDED', action);
   }
 
-  // ─── Event Listeners ───
-
-  // Click
   document.addEventListener('click', (e) => {
     recordAction('click', e);
   }, true);
 
-  // Input
   document.addEventListener('input', (e) => {
     const value = getElementValue(e.target);
     recordAction('input', e, value);
   }, true);
 
-  // Change
   document.addEventListener('change', (e) => {
     const value = getElementValue(e.target);
     recordAction('change', e, value);
   }, true);
 
-  // Submit
   document.addEventListener('submit', (e) => {
     recordAction('submit', e);
   }, true);
 
-  // Keydown
   document.addEventListener('keydown', (e) => {
     recordAction('keydown', e);
   }, true);
 
-  // Focus
   document.addEventListener('focus', (e) => {
     recordAction('focus', e);
   }, true);
 
-  // Blur
   document.addEventListener('blur', (e) => {
     recordAction('blur', e);
   }, true);
 
-  // Scroll (debounced)
   let scrollTimer = null;
   document.addEventListener('scroll', (e) => {
     if (scrollTimer) clearTimeout(scrollTimer);
@@ -449,14 +276,37 @@
 
   const originalFetch = window.fetch;
 
+  function truncateBodyText(text, maxBytes) {
+    const originalSize = text.length;
+    if (originalSize <= maxBytes) {
+      return { body: text, truncated: false, originalSize, storedSize: originalSize };
+    }
+    return {
+      body: text.slice(0, maxBytes),
+      truncated: true,
+      originalSize,
+      storedSize: maxBytes
+    };
+  }
+
   window.fetch = async function (...args) {
     const ctx = currentActionContext;
     const startTime = Date.now();
+    const cfg = effectiveSettings();
 
     let url, init;
-    if (args[0] instanceof Request) {
-      url = args[0].url;
+    if (typeof Request !== 'undefined' && args[0] instanceof Request) {
+      const req = args[0];
+      url = req.url;
       init = args[1] || {};
+      if (!init.method) init = { ...init, method: req.method };
+      if (!init.headers && req.headers) init = { ...init, headers: req.headers };
+      if (init.body === undefined && req.method !== 'GET' && req.method !== 'HEAD') {
+        try {
+          const cloned = req.clone();
+          init = { ...init, body: await cloned.text() };
+        } catch (e) { /* body may be unavailable */ }
+      }
     } else {
       url = args[0];
       init = args[1] || {};
@@ -465,8 +315,10 @@
     const method = (init.method || 'GET').toUpperCase();
     const headers = {};
     if (init.headers) {
-      if (init.headers instanceof Headers) {
+      if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
         init.headers.forEach((v, k) => { headers[k] = v; });
+      } else if (Array.isArray(init.headers)) {
+        for (const [k, v] of init.headers) headers[k] = v;
       } else if (typeof init.headers === 'object') {
         Object.assign(headers, init.headers);
       }
@@ -474,21 +326,37 @@
 
     let body = init.body || null;
     if (body && typeof body === 'string') {
-      try { body = JSON.parse(body); } catch {}
+      try { body = JSON.parse(body); } catch (e) { /* keep string */ }
+    }
+
+    const rawBodySize = typeof init.body === 'string' ? init.body.length : 0;
+    let requestBody = body;
+    let requestTruncated = false;
+    let requestOriginalSize = rawBodySize;
+    let requestStoredSize = rawBodySize;
+    if (typeof init.body === 'string' && init.body.length > cfg.maxRequestBodySize) {
+      requestTruncated = true;
+      requestOriginalSize = init.body.length;
+      requestStoredSize = cfg.maxRequestBodySize;
+      const slice = init.body.slice(0, cfg.maxRequestBodySize);
+      try { requestBody = JSON.parse(slice); } catch (e) { requestBody = slice; }
     }
 
     const networkEvent = {
       sessionId,
       timestamp: startTime,
       source: 'fetch',
-      causedByAction: ctx?.actionUid || null,
+      causedByAction: ctx ? ctx.actionUid : null,
       connectionId: null,
       request: {
         url: typeof url === 'string' ? url : url.url,
         method,
         headers,
-        body,
-        bodySize: typeof init.body === 'string' ? init.body.length : 0
+        body: requestBody,
+        bodySize: rawBodySize,
+        truncated: requestTruncated,
+        originalSize: requestOriginalSize,
+        storedSize: requestStoredSize
       },
       response: null
     };
@@ -503,30 +371,35 @@
         headers: {},
         body: null,
         bodySize: 0,
-        truncated: false
+        truncated: false,
+        originalSize: 0,
+        storedSize: 0
       };
 
       cloned.headers.forEach((v, k) => {
         networkEvent.response.headers[k] = v;
       });
 
-      // Try to read response body
       const contentType = cloned.headers.get('content-type') || '';
-      if (contentType.includes('application/json') || contentType.includes('text/')) {
+      if (contentType.includes('application/json') || contentType.includes('text/') ||
+          contentType.includes('application/x-www-form-urlencoded')) {
         try {
           const text = await cloned.text();
-          networkEvent.response.bodySize = text.length;
-          if (text.length <= 262144) { // 256KB
+          const t = truncateBodyText(text, cfg.maxResponseBodySize);
+          networkEvent.response.bodySize = t.originalSize;
+          networkEvent.response.truncated = t.truncated;
+          networkEvent.response.originalSize = t.originalSize;
+          networkEvent.response.storedSize = t.storedSize;
+          if (contentType.includes('application/json') && !t.truncated) {
             try {
-              networkEvent.response.body = JSON.parse(text);
-            } catch {
-              networkEvent.response.body = text;
+              networkEvent.response.body = JSON.parse(t.body);
+            } catch (e) {
+              networkEvent.response.body = t.body;
             }
           } else {
-            networkEvent.response.truncated = true;
-            networkEvent.response.body = text.slice(0, 262144);
+            networkEvent.response.body = t.body;
           }
-        } catch {}
+        } catch (e) { /* ignore body read errors */ }
       }
 
       sendMessage('NETWORK_EVENT', networkEvent);
@@ -570,27 +443,42 @@
 
     xhr.send = function (body) {
       const ctx = currentActionContext;
+      const cfg = effectiveSettings();
 
+      let requestBody;
       if (body && typeof body === 'string') {
-        try { meta.requestBody = JSON.parse(body); } catch {
-          meta.requestBody = body;
-        }
+        try { requestBody = JSON.parse(body); } catch (e) { requestBody = body; }
       } else {
-        meta.requestBody = body;
+        requestBody = body;
+      }
+
+      const rawSize = typeof body === 'string' ? body.length : 0;
+      let truncated = false;
+      let originalSize = rawSize;
+      let storedSize = rawSize;
+      if (typeof body === 'string' && body.length > cfg.maxRequestBodySize) {
+        truncated = true;
+        originalSize = body.length;
+        storedSize = cfg.maxRequestBodySize;
+        const slice = body.slice(0, cfg.maxRequestBodySize);
+        try { requestBody = JSON.parse(slice); } catch (e) { requestBody = slice; }
       }
 
       const networkEvent = {
         sessionId,
         timestamp: meta.startTime,
         source: 'xhr',
-        causedByAction: ctx?.actionUid || null,
+        causedByAction: ctx ? ctx.actionUid : null,
         connectionId: null,
         request: {
           url: meta.url,
           method: meta.method,
           headers: { ...meta.headers },
-          body: meta.requestBody,
-          bodySize: typeof body === 'string' ? body.length : 0
+          body: requestBody,
+          bodySize: rawSize,
+          truncated,
+          originalSize,
+          storedSize
         },
         response: null
       };
@@ -599,27 +487,31 @@
         const contentType = this.getResponseHeader('content-type') || '';
         let responseBody = null;
         let bodySize = 0;
-        let truncated = false;
+        let respTruncated = false;
+        let respOriginal = 0;
+        let respStored = 0;
 
-        if (contentType.includes('application/json') || contentType.includes('text/')) {
+        if (contentType.includes('application/json') || contentType.includes('text/') ||
+            contentType.includes('application/x-www-form-urlencoded')) {
           const text = this.responseText || '';
-          bodySize = text.length;
-          if (text.length <= 262144) {
-            try { responseBody = JSON.parse(text); } catch {
-              responseBody = text;
-            }
+          const t = truncateBodyText(text, cfg.maxResponseBodySize);
+          bodySize = t.originalSize;
+          respTruncated = t.truncated;
+          respOriginal = t.originalSize;
+          respStored = t.storedSize;
+          if (contentType.includes('application/json') && !t.truncated) {
+            try { responseBody = JSON.parse(t.body); } catch (e) { responseBody = t.body; }
           } else {
-            truncated = true;
-            responseBody = text.slice(0, 262144);
+            responseBody = t.body;
           }
         }
 
         const responseHeaders = {};
         const headerStr = this.getAllResponseHeaders() || '';
         headerStr.split('\r\n').forEach(line => {
-          const [name, ...rest] = line.split(':');
-          if (name && rest.length) {
-            responseHeaders[name.trim()] = rest.join(':').trim();
+          const idx = line.indexOf(':');
+          if (idx > 0) {
+            responseHeaders[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
           }
         });
 
@@ -629,9 +521,16 @@
           headers: responseHeaders,
           body: responseBody,
           bodySize,
-          truncated
+          truncated: respTruncated,
+          originalSize: respOriginal,
+          storedSize: respStored
         };
 
+        sendMessage('NETWORK_EVENT', networkEvent);
+      });
+
+      this.addEventListener('error', () => {
+        networkEvent.response = { status: 0, error: 'network error' };
         sendMessage('NETWORK_EVENT', networkEvent);
       });
 
@@ -641,7 +540,6 @@
     return xhr;
   }
 
-  // Preserve static properties
   PatchedXHR.UNSENT = 0;
   PatchedXHR.OPENED = 1;
   PatchedXHR.HEADERS_RECEIVED = 2;

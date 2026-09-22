@@ -24,8 +24,8 @@ export function openDB() {
         a.createIndex('sessionId', 'sessionId', { unique: false });
         a.createIndex('timestamp', 'timestamp', { unique: false });
         a.createIndex('actionId', 'actionId', { unique: false });
-        a.createIndex('tabId', 'tabId', { unique: false });
-        a.createIndex('frameId', 'frameId', { unique: false });
+        a.createIndex('frame.tabId', 'frame.tabId', { unique: false });
+        a.createIndex('frame.frameId', 'frame.frameId', { unique: false });
       }
       if (!db.objectStoreNames.contains('networkEvents')) {
         const n = db.createObjectStore('networkEvents', { keyPath: 'id', autoIncrement: true });
@@ -51,8 +51,24 @@ export function closeDB() {
 function txPromise(storeNames, mode, fn) {
   return openDB().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(storeNames, mode);
-    fn(tx, resolve, reject);
-    tx.onerror = (e) => reject(new Error(`Transaction failed: ${e.target.error}`));
+    let settled = false;
+    const done = (value) => {
+      if (!settled) { settled = true; resolve(value); }
+    };
+    try {
+      fn(tx, done, reject);
+    } catch (e) {
+      settled = true;
+      reject(e);
+      return;
+    }
+    tx.oncomplete = () => done();
+    tx.onerror = (e) => {
+      if (!settled) { settled = true; reject(new Error(`Transaction failed: ${e.target.error}`)); }
+    };
+    tx.onabort = (e) => {
+      if (!settled) { settled = true; reject(new Error(`Transaction aborted: ${e.target.error || 'abort'}`)); }
+    };
   }));
 }
 
@@ -115,6 +131,15 @@ export function getActionsBySession(sessionId) {
   }));
 }
 
+export function countActionsBySession(sessionId) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction('actions', 'readonly').objectStore('actions')
+      .index('sessionId').count(IDBKeyRange.only(sessionId));
+    req.onsuccess = () => resolve(req.result || 0);
+    req.onerror = (e) => reject(new Error(`countActionsBySession failed: ${e.target.error}`));
+  }));
+}
+
 export function saveNetworkEvent(event) {
   return txPromise('networkEvents', 'readwrite', (tx) => {
     tx.objectStore('networkEvents').put(event);
@@ -134,5 +159,14 @@ export function getNetworkEventsBySession(sessionId) {
       .index('sessionId').getAll(IDBKeyRange.only(sessionId));
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = (e) => reject(new Error(`getNetworkEventsBySession failed: ${e.target.error}`));
+  }));
+}
+
+export function countNetworkEventsBySession(sessionId) {
+  return openDB().then(db => new Promise((resolve, reject) => {
+    const req = db.transaction('networkEvents', 'readonly').objectStore('networkEvents')
+      .index('sessionId').count(IDBKeyRange.only(sessionId));
+    req.onsuccess = () => resolve(req.result || 0);
+    req.onerror = (e) => reject(new Error(`countNetworkEventsBySession failed: ${e.target.error}`));
   }));
 }

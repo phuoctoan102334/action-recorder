@@ -13,3 +13,8 @@ node_modules/
 dist/
 build/
 *.zip
+
+# Test artifacts
+test-results/
+playwright-report/
+coverage/

@@ -26,6 +26,7 @@ const keywordInput = $('#custom-keyword-input');
 const keywordTags = $('#keyword-tags');
 
 let activeSessionId = null;
+let isRecording = false;
 let actionCount = 0;
 let networkCount = 0;
 let customKeywords = [];
@@ -45,8 +46,8 @@ $$('.section-header').forEach(header => {
     if (section) {
       const hidden = section.style.display === 'none';
       section.style.display = hidden ? 'block' : 'none';
-      const arrow = hidden ? '\u25BE' : '\u25B8';
-      header.textContent = header.textContent.replace(/[\u25B8\u25BE]$/, arrow);
+      const arrow = hidden ? '▾' : '▸';
+      header.textContent = header.textContent.replace(/[▸▾]$/, arrow);
     }
   });
 });
@@ -58,11 +59,18 @@ function generateSessionId() {
   });
 }
 
-function updateRecordingUI(isRecording) {
-  if (isRecording) {
+function renderCounters() {
+  actionCountEl.textContent = String(actionCount);
+  networkCountEl.textContent = String(networkCount);
+  updateExportButtons();
+}
+
+function updateRecordingUI(recording) {
+  isRecording = recording;
+  if (recording) {
     statusDot.className = 'status-dot on';
     statusText.textContent = 'Recording ON';
-    sessionIdEl.textContent = activeSessionId || '\u2014';
+    sessionIdEl.textContent = activeSessionId || '—';
     helperText.style.display = 'block';
     btnStart.disabled = true;
     btnStop.disabled = false;
@@ -72,23 +80,23 @@ function updateRecordingUI(isRecording) {
     helperText.style.display = 'none';
     btnStart.disabled = false;
     btnStop.disabled = true;
-    actionCount = 0;
-    networkCount = 0;
-    actionCountEl.textContent = '0';
-    networkCountEl.textContent = '0';
-    sessionIdEl.textContent = '\u2014';
-    updateExportButtons();
+    // Keep counters + session id after stop so Export/Clear stay usable (B4)
+    if (activeSessionId) {
+      sessionIdEl.textContent = activeSessionId;
+    }
   }
+  renderCounters();
 }
 
 function updateExportButtons() {
   const hasData = actionCount > 0 || networkCount > 0;
-  btnExportJson.disabled = !hasData;
-  btnExportPw.disabled = !hasData;
-  btnClear.disabled = !hasData;
+  btnExportJson.disabled = !hasData || !activeSessionId;
+  btnExportPw.disabled = !hasData || !activeSessionId;
+  btnClear.disabled = !hasData || !activeSessionId;
 }
 
 function loadSettings(settings) {
+  if (!settings) return;
   const sd = settings.sensitiveData || {};
   ['authorization', 'cookies', 'apikeys', 'accesstokens', 'refreshtokens'].forEach(key => {
     const settingKey = key === 'apikeys' ? 'apiKeys' : key === 'accesstokens' ? 'accessTokens' : key === 'refreshtokens' ? 'refreshTokens' : key;
@@ -99,10 +107,14 @@ function loadSettings(settings) {
     }
   });
 
-  $('#set-network').checked = settings.captureNetworkRequests !== false;
-  $('#set-iframes').checked = settings.captureIframes !== false;
-  $('#set-async-context').checked = settings.asyncContextPropagation === true;
-  $('#set-mask-export').checked = settings.maskInExport !== false;
+  const net = $('#set-network');
+  if (net) net.checked = settings.captureNetworkRequests !== false;
+  const ifr = $('#set-iframes');
+  if (ifr) ifr.checked = settings.captureIframes !== false;
+  const ac = $('#set-async-context');
+  if (ac) ac.checked = settings.asyncContextPropagation === true;
+  const me = $('#set-mask-export');
+  if (me) me.checked = settings.maskInExport !== false;
   const fmt = $('input[name="export-format"][value="' + (settings.exportFormat || 'json') + '"]');
   if (fmt) fmt.checked = true;
 
@@ -116,28 +128,32 @@ function loadSettings(settings) {
 }
 
 function collectSettings() {
+  const checked = (name) => {
+    const el = document.querySelector(`input[name="${name}"]:checked`);
+    return el ? el.value : 'mask';
+  };
   return {
     captureUIEvents: true,
     captureNetworkRequests: $('#set-network').checked,
     captureWebSocket: false,
     captureSPANavigation: false,
     captureIframes: $('#set-iframes').checked,
-    maxRequestBodySize: Math.max(16, Math.min(256, parseInt($('#set-req-body').value) || 64)) * 1024,
-    maxResponseBodySize: Math.max(64, Math.min(1024, parseInt($('#set-res-body').value) || 256)) * 1024,
-    maxOuterHTML: Math.max(500, Math.min(5000, parseInt($('#set-outer-html').value) || 2000)),
-    maxText: Math.max(1000, Math.min(20000, parseInt($('#set-text').value) || 5000)),
+    maxRequestBodySize: Math.max(16, Math.min(256, parseInt($('#set-req-body').value, 10) || 64)) * 1024,
+    maxResponseBodySize: Math.max(64, Math.min(1024, parseInt($('#set-res-body').value, 10) || 256)) * 1024,
+    maxOuterHTML: Math.max(500, Math.min(5000, parseInt($('#set-outer-html').value, 10) || 2000)),
+    maxText: Math.max(1000, Math.min(20000, parseInt($('#set-text').value, 10) || 5000)),
     sensitiveData: {
       passwords: { masked: true, locked: true },
       creditCards: { masked: true, locked: true },
-      authorization: { masked: $('input[name="sens-authorization"]:checked').value === 'mask', locked: false },
-      cookies: { masked: $('input[name="sens-cookies"]:checked').value === 'mask', locked: false },
-      apiKeys: { masked: $('input[name="sens-apikeys"]:checked').value === 'mask', locked: false },
-      accessTokens: { masked: $('input[name="sens-accesstokens"]:checked').value === 'mask', locked: false },
-      refreshTokens: { masked: $('input[name="sens-refreshtokens"]:checked').value === 'mask', locked: false }
+      authorization: { masked: checked('sens-authorization') === 'mask', locked: false },
+      cookies: { masked: checked('sens-cookies') === 'mask', locked: false },
+      apiKeys: { masked: checked('sens-apikeys') === 'mask', locked: false },
+      accessTokens: { masked: checked('sens-accesstokens') === 'mask', locked: false },
+      refreshTokens: { masked: checked('sens-refreshtokens') === 'mask', locked: false }
     },
     customSensitiveKeywords: customKeywords,
     asyncContextPropagation: $('#set-async-context').checked,
-    exportFormat: $('input[name="export-format"]:checked').value,
+    exportFormat: (document.querySelector('input[name="export-format"]:checked') || { value: 'json' }).value,
     maskInExport: $('#set-mask-export').checked
   };
 }
@@ -147,12 +163,11 @@ function renderKeywordTags() {
   customKeywords.forEach((kw, i) => {
     const tag = document.createElement('span');
     tag.className = 'keyword-tag';
-    const txt = document.createTextNode(kw + ' ');
-    tag.appendChild(txt);
+    tag.appendChild(document.createTextNode(kw + ' '));
     const remove = document.createElement('span');
     remove.className = 'remove';
-    remove.dataset.index = i;
-    remove.textContent = '\u00D7';
+    remove.dataset.index = String(i);
+    remove.textContent = '×';
     tag.appendChild(remove);
     keywordTags.appendChild(tag);
   });
@@ -174,13 +189,69 @@ function downloadText(text, filename) {
   URL.revokeObjectURL(url);
 }
 
-function buildPlaywrightSelector(target) {
-  if (!target) return 'body';
-  const c = target.cssSelectorCandidates || [];
-  if (c.length > 0) return c[0];
-  if (target.id) return '#' + target.id;
-  if (target.tag) return target.tag;
-  return 'body';
+function cssEscape(value) {
+  if (typeof CSS !== 'undefined' && CSS.escape) return CSS.escape(value);
+  return String(value).replace(/[^\w-]/g, ch => '\\' + ch);
+}
+
+function implicitRole(target) {
+  const tag = target.tag;
+  const attrs = target.attributes || {};
+  if (attrs.role) return attrs.role;
+  if (tag === 'button') return 'button';
+  if (tag === 'a') return 'link';
+  if (tag === 'select') return 'combobox';
+  if (tag === 'textarea') return 'textbox';
+  if (tag === 'input') {
+    const type = attrs.type || 'text';
+    if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (type === 'search') return 'searchbox';
+    if (type === 'email' || type === 'url' || type === 'tel' || type === 'password' || type === 'text') return 'textbox';
+  }
+  if (tag === 'h1' || tag === 'h2' || tag === 'h3' || tag === 'h4' || tag === 'h5' || tag === 'h6') return 'heading';
+  return null;
+}
+
+function escapeJs(str) {
+  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/** SPEC §17 selector priority: data-testid → role/name → label → name → id → stable CSS → XPath */
+function buildPlaywrightLocator(action) {
+  const t = action.target;
+  if (!t) return "page.locator('body')";
+  const attrs = t.attributes || {};
+
+  if (attrs['data-testid']) return `page.getByTestId('${escapeJs(attrs['data-testid'])}')`;
+  if (attrs['data-test']) return `page.locator('[data-test="${cssEscape(attrs['data-test'])}"]')`;
+  if (attrs['data-cy']) return `page.locator('[data-cy="${cssEscape(attrs['data-cy'])}"]')`;
+
+  const role = implicitRole(t);
+  const name = (t.innerText && t.innerText.slice(0, 80).trim()) || attrs['aria-label'] || null;
+  if (role && name) {
+    return `page.getByRole('${role}', { name: '${escapeJs(name)}' })`;
+  }
+  if (attrs['aria-label']) return `page.getByLabel('${escapeJs(attrs['aria-label'])}')`;
+  if (t.name) return `page.locator('${escapeJs(`${t.tag}[name="${t.name}"]`)}')`;
+  if (t.id) return `page.locator('#${cssEscape(t.id)}')`;
+  if (t.cssSelectorCandidates && t.cssSelectorCandidates.length > 0) {
+    return `page.locator('${escapeJs(t.cssSelectorCandidates[0])}')`;
+  }
+  if (t.xpath) return `page.locator('xpath=${escapeJs(t.xpath)}')`;
+  if (t.domPath && t.domPath.length > 0) {
+    return `page.locator('${escapeJs('/' + t.domPath.join('/'))}')`;
+  }
+  return "page.locator('body')";
+}
+
+function valueForExport(action) {
+  if (action.value == null) return null;
+  if (action.target && action.target.sensitive) {
+    return action.value === '[MASKED]' ? null : action.value;
+  }
+  return action.value;
 }
 
 function generatePlaywrightScript(data) {
@@ -195,25 +266,32 @@ function generatePlaywrightScript(data) {
     pages[url].push(action);
   }
   for (const url of Object.keys(pages)) {
-    lines.push("  await page.goto('" + url + "');");
+    lines.push(`  await page.goto('${escapeJs(url)}');`);
     for (const action of pages[url]) {
-      const sel = buildPlaywrightSelector(action.target);
+      const loc = buildPlaywrightLocator(action);
       if (action.type === 'click') {
-        lines.push("  await page.locator('" + sel + "').click();");
+        lines.push(`  await ${loc}.click();`);
       } else if (action.type === 'input' || action.type === 'change') {
-        if (action.value != null) {
-          const val = String(action.value).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-          lines.push("  await page.locator('" + sel + "').fill('" + val + "');");
+        const raw = valueForExport(action);
+        if (raw != null && typeof raw !== 'boolean') {
+          const val = escapeJs(String(raw));
+          lines.push(`  await ${loc}.fill('${val}');`);
+        } else if (action.target && action.target.sensitive) {
+          lines.push(`  await ${loc}.fill(process.env.SECRET_VALUE || '');`);
+        } else if (typeof raw === 'boolean') {
+          lines.push(`  await ${loc}.setChecked(${raw});`);
         }
       } else if (action.type === 'keydown') {
         if (action.keyInfo && action.keyInfo.key) {
-          lines.push("  await page.keyboard.press('" + action.keyInfo.key + "');");
+          lines.push(`  await page.keyboard.press('${escapeJs(action.keyInfo.key)}');`);
         }
+      } else if (action.type === 'submit') {
+        lines.push(`  await ${loc}.press('Enter');`);
       }
     }
   }
   lines.push("});");
-  return lines.join("\n");
+  return lines.join('\n');
 }
 
 // ─── Event Listeners ───
@@ -228,37 +306,22 @@ btnStart.addEventListener('click', () => {
     version: MV,
     payload: { sessionId: activeSessionId, startedAt: Date.now() }
   }, () => {
-    chrome.tabs.query({}, (tabs) => {
-      for (const tab of tabs) {
-        chrome.tabs.sendMessage(tab.id, {
-          type: 'START_RECORDING',
-          source: MS,
-          version: MV,
-          payload: { sessionId: activeSessionId }
-        }).catch(() => {});
-      }
-    });
+    void chrome.runtime.lastError;
     updateRecordingUI(true);
   });
 });
 
 btnStop.addEventListener('click', () => {
+  if (!activeSessionId) return;
+  const sid = activeSessionId;
   chrome.runtime.sendMessage({
     type: 'SESSION_STOP',
     source: MS,
     version: MV,
-    payload: { sessionId: activeSessionId, endedAt: Date.now() }
+    payload: { sessionId: sid, endedAt: Date.now() }
   }, () => {
-    chrome.tabs.query({}, (tabs) => {
-      for (const tab of tabs) {
-        chrome.tabs.sendMessage(tab.id, {
-          type: 'STOP_RECORDING',
-          source: MS,
-          version: MV,
-          payload: { sessionId: activeSessionId }
-        }).catch(() => {});
-      }
-    });
+    void chrome.runtime.lastError;
+    // Keep counters and activeSessionId so export still works (B4)
     updateRecordingUI(false);
   });
 });
@@ -266,17 +329,25 @@ btnStop.addEventListener('click', () => {
 btnClear.addEventListener('click', () => {
   if (!activeSessionId) return;
   if (!confirm('Clear all recorded data for this session?')) return;
-  chrome.runtime.sendMessage({ type: 'DELETE_SESSION', sessionId: activeSessionId }, () => {
-    updateRecordingUI(false);
+  const sid = activeSessionId;
+  chrome.runtime.sendMessage({ type: 'DELETE_SESSION', sessionId: sid }, (resp) => {
+    void chrome.runtime.lastError;
+    if (resp && resp.ok) {
+      actionCount = 0;
+      networkCount = 0;
+      activeSessionId = null;
+      sessionIdEl.textContent = '—';
+      updateRecordingUI(false);
+    }
   });
 });
 
 btnCopySession.addEventListener('click', () => {
   const text = sessionIdEl.textContent;
-  if (text && text !== '\u2014') {
+  if (text && text !== '—') {
     navigator.clipboard.writeText(text).then(() => {
-      btnCopySession.textContent = '\u2705';
-      setTimeout(() => { btnCopySession.textContent = '\uD83D\uDCCB'; }, 1500);
+      btnCopySession.textContent = '✅';
+      setTimeout(() => { btnCopySession.textContent = '📋'; }, 1500);
     });
   }
 });
@@ -284,14 +355,18 @@ btnCopySession.addEventListener('click', () => {
 btnExportJson.addEventListener('click', () => {
   if (!activeSessionId) return;
   chrome.runtime.sendMessage({ type: 'EXPORT_JSON', sessionId: activeSessionId }, (resp) => {
-    if (resp && resp.ok) downloadJSON(resp.data, 'action-recorder-' + activeSessionId + '.json');
+    void chrome.runtime.lastError;
+    if (resp && resp.ok && resp.data) {
+      downloadJSON(resp.data, 'action-recorder-' + activeSessionId + '.json');
+    }
   });
 });
 
 btnExportPw.addEventListener('click', () => {
   if (!activeSessionId) return;
   chrome.runtime.sendMessage({ type: 'EXPORT_JSON', sessionId: activeSessionId }, (resp) => {
-    if (resp && resp.ok) {
+    void chrome.runtime.lastError;
+    if (resp && resp.ok && resp.data) {
       const script = generatePlaywrightScript(resp.data);
       downloadText(script, 'action-recorder-' + activeSessionId + '.spec.js');
     }
@@ -301,6 +376,7 @@ btnExportPw.addEventListener('click', () => {
 btnSave.addEventListener('click', () => {
   const settings = collectSettings();
   chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings }, (resp) => {
+    void chrome.runtime.lastError;
     if (resp && resp.ok) {
       btnSave.textContent = 'Saved!';
       setTimeout(() => { btnSave.textContent = 'Save Settings'; }, 1500);
@@ -325,6 +401,7 @@ btnReset.addEventListener('click', () => {
     exportFormat: 'json', maskInExport: true
   };
   chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings: defaults }, () => {
+    void chrome.runtime.lastError;
     loadSettings(defaults);
   });
 });
@@ -344,37 +421,42 @@ keywordInput.addEventListener('keydown', (e) => {
 
 keywordTags.addEventListener('click', (e) => {
   if (e.target.classList.contains('remove')) {
-    const idx = parseInt(e.target.dataset.index);
+    const idx = parseInt(e.target.dataset.index, 10);
     customKeywords.splice(idx, 1);
     renderKeywordTags();
   }
 });
 
-// Listen for messages from background to update counters
+// Live counters while popup is open (messages forwarded by relay → runtime broadcast)
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.source === MS && msg.version === MV) {
+  if (msg && msg.source === MS && msg.version === MV && isRecording) {
     if (msg.type === 'ACTION_RECORDED') {
       actionCount++;
-      actionCountEl.textContent = actionCount;
-      updateExportButtons();
+      renderCounters();
     } else if (msg.type === 'NETWORK_EVENT') {
       networkCount++;
-      networkCountEl.textContent = networkCount;
-      updateExportButtons();
+      renderCounters();
     }
   }
 });
 
-// Initialize on load
+// Initialize: status + counts from background (B4/B5)
 chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
-  if (response && response.activeSessionId) {
+  if (chrome.runtime.lastError || !response) return;
+  if (response.actionCount != null) actionCount = response.actionCount;
+  if (response.networkCount != null) networkCount = response.networkCount;
+  if (response.activeSessionId) {
     activeSessionId = response.activeSessionId;
     updateRecordingUI(true);
+  } else if (response.sessionId) {
+    activeSessionId = response.sessionId;
+    updateRecordingUI(false);
+  } else {
+    updateRecordingUI(false);
   }
 });
 
 chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (response) => {
-  if (response && response.ok) {
-    loadSettings(response.settings);
-  }
+  if (chrome.runtime.lastError || !response) return;
+  if (response.ok) loadSettings(response.settings);
 });
